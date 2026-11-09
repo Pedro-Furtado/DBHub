@@ -5,10 +5,12 @@ import { createLogger } from '../../lib/logger.ts'
 import { runAdvisors } from '../advisors/advisors.service.ts'
 import { connectionsService } from '../connections/connections.service.ts'
 import { rowFilter } from '../database/database.schemas.ts'
-import { databaseService, withConnection } from '../database/database.service.ts'
-import { alterColumnBody, alterEnumBody, columnDefinition, createEnumBody, createTableBody } from '../database/ddl.schemas.ts'
+import { assertWritable, databaseService, withConnection } from '../database/database.service.ts'
+import { alterColumnBody, alterEnumBody, alterTableBody, columnDefinition, createEnumBody, createTableBody } from '../database/ddl.schemas.ts'
 import { buildCreateTableSql } from '../database/ddl.service.ts'
-import { getSessionInfo, listTablesRls } from '../policies/policies.service.ts'
+import { policyBody } from '../policies/policies.schemas.ts'
+import { buildCreatePolicySql, createPolicy, dropPolicy, getSessionInfo, listTablesRls, setRls } from '../policies/policies.service.ts'
+import { type CloneEvent, planClone, runClone } from '../sync/clone.service.ts'
 import type { McpKeyContext } from './mcp-keys.service.ts'
 
 const log = createLogger('mcp')
@@ -19,8 +21,10 @@ Fluxo recomendado:
 1. list_connections — veja os bancos disponíveis para esta chave e pegue o connection_id.
 2. list_tables / describe_table — entenda a estrutura antes de consultar ou alterar.
 3. execute_sql — SQL livre (SELECT, e com chave de escrita também INSERT/UPDATE/DDL/RLS).
-4. Ferramentas de estrutura (create_table, add_column, alter_column, drop_*, create_enum…) aceitam dry_run=true:
-   use para mostrar o SQL ao usuário antes de executar alterações destrutivas.
+4. Ferramentas de estrutura (create_table, add_column, alter_column, alter_table, drop_*, create_enum, create_policy…)
+   aceitam dry_run=true: use para mostrar o SQL ao usuário antes de executar alterações destrutivas.
+5. get_table_definition devolve o SQL completo que recria uma tabela (enums, FKs, índices, triggers, policies).
+6. Clonar um banco para outro vazio (ex.: produção → staging): plan_clone (revisão) e depois clone_database.
 Regras: conexões marcadas como somente leitura recusam qualquer escrita; chaves de leitura só consultam.
 `.trim()
 
@@ -55,7 +59,7 @@ function toToolError(error: unknown): ToolResult {
  * o escopo de conexões é checado em toda chamada.
  */
 export function buildMcpServer(key: McpKeyContext) {
-  const server = new McpServer({ name: 'dbhub', version: '0.1.0' }, { instructions: INSTRUCTIONS })
+  const server = new McpServer({ name: 'dbhub', version: '0.2.0' }, { instructions: INSTRUCTIONS })
   const canWrite = key.access === 'write'
 
   async function allow(id: string) {
@@ -276,6 +280,41 @@ export function buildMcpServer(key: McpKeyContext) {
     }),
   )
 
+  server.registerTool(
+    'get_table_definition',
+    {
+      title: 'SQL da tabela',
+      description:
+        'Devolve o SQL que recria a tabela (ou view) como ela está: enums usados, sequences, colunas, PK/UNIQUE/CHECK, comentários, FKs, índices, funções e triggers, RLS e policies.',
+      inputSchema: { connection_id: connectionId, schema: schemaName, table: tableName },
+      annotations: readOnlyHint,
+    },
+    handler('get_table_definition', async (a: { connection_id: string; schema: string; table: string }) => {
+      await allow(a.connection_id)
+      return (await databaseService.definition(a.connection_id, a.schema, a.table)).sql
+    }),
+  )
+
+  server.registerTool(
+    'plan_clone',
+    {
+      title: 'Analisar clone de banco',
+      description:
+        'Revisão antes de clonar a estrutura (e opcionalmente dados) de uma conexão para outra VAZIA: contagens, tabelas com tamanho, alertas, bloqueios e o SQL. Não altera nada.',
+      inputSchema: {
+        source_id: z.uuid().describe('Conexão de origem (só é lida)'),
+        target_id: z.uuid().describe('Conexão de destino (precisa estar vazia)'),
+      },
+      annotations: readOnlyHint,
+    },
+    handler('plan_clone', async (a: { source_id: string; target_id: string }) => {
+      await allow(a.source_id)
+      await allow(a.target_id)
+      const plan = await planClone(a.source_id, a.target_id)
+      return { ...plan, tables: plan.tables.map((t) => ({ key: t.key, rowEstimate: t.rowEstimate, sizeBytes: t.sizeBytes })) }
+    }),
+  )
+
   if (!canWrite) return server
 
   // ── Escrita (só chaves "write") ──────────────────────────────────
@@ -429,6 +468,156 @@ export function buildMcpServer(key: McpKeyContext) {
     handler('update_rows', async (a: { connection_id: string; schema: string; table: string; key: Record<string, unknown>; changes: Record<string, unknown>; hash_columns?: string[] }) => {
       await allow(a.connection_id)
       return databaseService.update(a.connection_id, a.schema, a.table, a.key, a.changes, a.hash_columns)
+    }),
+  )
+
+  server.registerTool(
+    'alter_table',
+    {
+      title: 'Alterar tabela',
+      description: 'Renomeia a tabela, move de schema ou muda a descrição (comment null remove). Envie só o que muda.',
+      inputSchema: { connection_id: connectionId, schema: schemaName, table: tableName, changes: alterTableBody, dry_run: dryRun },
+      annotations: write,
+    },
+    handler('alter_table', async (a: { connection_id: string; schema: string; table: string; changes: z.infer<typeof alterTableBody>; dry_run: boolean }) => {
+      await allow(a.connection_id)
+      return databaseService.alterTable(a.connection_id, a.schema, a.table, a.changes, a.dry_run)
+    }),
+  )
+
+  server.registerTool(
+    'drop_enum',
+    {
+      title: 'Excluir enum',
+      description: 'Exclui um tipo enum. Sem cascade, falha se alguma coluna ainda usa o tipo (veja list_enums → usedBy).',
+      inputSchema: { connection_id: connectionId, schema: schemaName, name: z.string().min(1).max(63), cascade: z.boolean().default(false), dry_run: dryRun },
+      annotations: destructive,
+    },
+    handler('drop_enum', async (a: { connection_id: string; schema: string; name: string; cascade: boolean; dry_run: boolean }) => {
+      await allow(a.connection_id)
+      return databaseService.dropEnum(a.connection_id, a.schema, a.name, { cascade: a.cascade, dryRun: a.dry_run })
+    }),
+  )
+
+  server.registerTool(
+    'delete_rows',
+    {
+      title: 'Excluir linhas',
+      description: 'Exclui até 1000 linhas identificadas pela chave primária, numa transação. Ex.: keys=[{"id": 1}, {"id": 2}].',
+      inputSchema: {
+        connection_id: connectionId,
+        schema: schemaName,
+        table: tableName,
+        keys: z.record(z.string(), z.unknown()).array().min(1).max(1000).describe('Chaves primárias das linhas'),
+      },
+      annotations: destructive,
+    },
+    handler('delete_rows', async (a: { connection_id: string; schema: string; table: string; keys: Record<string, unknown>[] }) => {
+      await allow(a.connection_id)
+      return { deleted: await databaseService.remove(a.connection_id, a.schema, a.table, a.keys) }
+    }),
+  )
+
+  server.registerTool(
+    'set_rls',
+    {
+      title: 'Ligar/desligar RLS',
+      description:
+        'Liga ou desliga o Row Level Security de uma tabela (enabled) e/ou força para o dono da tabela (forced). Com RLS ligado e sem policies, ninguém além do dono vê linhas.',
+      inputSchema: { connection_id: connectionId, schema: schemaName, table: tableName, enabled: z.boolean().optional(), forced: z.boolean().optional() },
+      annotations: destructive,
+    },
+    handler('set_rls', async (a: { connection_id: string; schema: string; table: string; enabled?: boolean; forced?: boolean }) => {
+      await allow(a.connection_id)
+      if (a.enabled === undefined && a.forced === undefined) throw new AppError(400, 'NOTHING_TO_CHANGE', 'Informe enabled e/ou forced')
+      await assertWritable(a.connection_id)
+      const change = { ...(a.enabled !== undefined && { enabled: a.enabled }), ...(a.forced !== undefined && { forced: a.forced }) }
+      return (await withConnection(a.connection_id, (c) => setRls(c, a.schema, a.table, change))).result
+    }),
+  )
+
+  server.registerTool(
+    'create_policy',
+    {
+      title: 'Criar policy (RLS)',
+      description:
+        'Cria uma política de RLS. command: ALL|SELECT|INSERT|UPDATE|DELETE. using = quais linhas a política alcança; withCheck = o que pode ser gravado (INSERT só usa withCheck; SELECT/DELETE só using). roles padrão: public.',
+      inputSchema: {
+        connection_id: connectionId,
+        schema: schemaName,
+        table: tableName,
+        policy: z.object({
+          name: z.string(),
+          command: z.string(),
+          permissive: z.boolean().optional(),
+          roles: z.string().array().optional(),
+          using: z.string().optional(),
+          withCheck: z.string().optional(),
+        }),
+        dry_run: dryRun,
+      },
+      annotations: write,
+    },
+    handler('create_policy', async (a: { connection_id: string; schema: string; table: string; policy: unknown; dry_run: boolean }) => {
+      await allow(a.connection_id)
+      const input = policyBody.parse(a.policy)
+      if (a.dry_run) return { sql: buildCreatePolicySql(a.schema, a.table, input), applied: false }
+      await assertWritable(a.connection_id)
+      return (await withConnection(a.connection_id, (c) => createPolicy(c, a.schema, a.table, input))).result
+    }),
+  )
+
+  server.registerTool(
+    'drop_policy',
+    {
+      title: 'Excluir policy (RLS)',
+      description: 'Remove uma política de RLS pelo nome (veja list_policies).',
+      inputSchema: { connection_id: connectionId, schema: schemaName, table: tableName, name: z.string().min(1).max(63) },
+      annotations: destructive,
+    },
+    handler('drop_policy', async (a: { connection_id: string; schema: string; table: string; name: string }) => {
+      await allow(a.connection_id)
+      await assertWritable(a.connection_id)
+      return (await withConnection(a.connection_id, (c) => dropPolicy(c, a.schema, a.table, a.name))).result
+    }),
+  )
+
+  server.registerTool(
+    'clone_database',
+    {
+      title: 'Clonar banco',
+      description:
+        'Copia a estrutura de source_id para target_id (que precisa estar VAZIO) e os dados das tabelas listadas em data_tables ("schema.tabela"). Tudo numa transação: se falhar, o destino fica intacto. Rode plan_clone antes. Destino de produção exige confirm = nome exato da conexão de destino — peça ao usuário.',
+      inputSchema: {
+        source_id: z.uuid(),
+        target_id: z.uuid(),
+        data_tables: z.string().min(3).max(130).array().max(2000).default([]).describe('Tabelas que levam dados, ex.: ["public.users"]. Vazio = só estrutura'),
+        confirm: z.string().max(200).optional().describe('Obrigatório quando o destino é produção: nome da conexão de destino'),
+      },
+      annotations: destructive,
+    },
+    handler('clone_database', async (a: { source_id: string; target_id: string; data_tables: string[]; confirm?: string }) => {
+      await allow(a.source_id)
+      await allow(a.target_id)
+      const events: CloneEvent[] = []
+      await runClone(
+        { sourceId: a.source_id, targetId: a.target_id, dataTables: a.data_tables, confirm: a.confirm },
+        (event) => {
+          if (event.type !== 'progress') events.push(event)
+        },
+        new AbortController().signal,
+      )
+      const failure = events.find((e) => e.type === 'error')
+      if (failure && failure.type === 'error') {
+        throw new AppError(400, 'CLONE_FAILED', `${failure.step ? `Falhou em "${failure.step}": ` : ''}${failure.message} — nada foi alterado no destino`)
+      }
+      const done = events.find((e) => e.type === 'done')
+      return {
+        ok: true,
+        ...(done && done.type === 'done' ? { durationMs: done.durationMs, summary: done.summary } : {}),
+        steps: events.filter((e) => e.type === 'step' && e.status !== 'running').map((e) => (e.type === 'step' ? `${e.status === 'skipped' ? '○' : '✓'} ${e.label}${e.detail ? ` — ${e.detail}` : ''}` : '')),
+        warnings: events.filter((e) => e.type === 'warn').map((e) => (e.type === 'warn' ? e.message : '')),
+      }
     }),
   )
 
