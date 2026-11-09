@@ -1,11 +1,13 @@
-import { Columns3, Ellipsis, Eye, Pencil, Plus, Search, Table2 } from 'lucide-react'
+import { Columns3, Ellipsis, Eye, FileCode2, Pencil, Plus, Search, Table2 } from 'lucide-react'
 import { useMemo, useState } from 'react'
 import { Link, NavLink } from 'react-router'
+import { toast } from 'sonner'
 import { Button } from '@/components/ui/button'
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from '@/components/ui/dropdown-menu'
 import { Input } from '@/components/ui/input'
 import { Skeleton } from '@/components/ui/skeleton'
-import { cn, formatNumber } from '@/lib/utils'
+import { databaseApi } from '@/features/database/api/database-api'
+import { cn } from '@/lib/utils'
 import type { TableInfo } from '@/types/database'
 import { EditTableLoader } from './structure/edit-table-dialog'
 
@@ -22,6 +24,17 @@ export function TableList({ connectionId, tables, loading, onCreateTable }: Tabl
   const [editing, setEditing] = useState<TableInfo | null>(null)
   // Sem "Nova tabela" = conexão somente leitura: não mostra ações de edição
   const canWrite = Boolean(onCreateTable)
+
+  const copySchema = async (table: TableInfo) => {
+    const id = toast.loading(`Gerando o schema de ${table.name}…`)
+    try {
+      const { sql } = await databaseApi.definition(connectionId, table.schema, table.name)
+      await navigator.clipboard.writeText(sql)
+      toast.success(`Schema de ${table.name} copiado`, { id, description: 'SQL completo: colunas, chaves, índices, triggers e policies.' })
+    } catch (error) {
+      toast.error('Não foi possível copiar o schema', { id, description: error instanceof Error ? error.message : undefined })
+    }
+  }
 
   const groups = useMemo(() => {
     const term = search.trim().toLowerCase()
@@ -64,7 +77,7 @@ export function TableList({ connectionId, tables, loading, onCreateTable }: Tabl
                       cn(
                         'group flex items-center gap-2 rounded-md px-2 py-1.5 text-sm text-sidebar-foreground transition-colors hover:bg-accent',
                         isActive && 'bg-accent font-medium text-foreground',
-                        canWrite && table.kind === 'table' && 'pr-8',
+                        'pr-8',
                       )
                     }
                   >
@@ -74,14 +87,8 @@ export function TableList({ connectionId, tables, loading, onCreateTable }: Tabl
                       <Table2 className="size-3.5 shrink-0 text-muted-foreground" />
                     )}
                     <span className="truncate">{table.name}</span>
-                    {table.kind === 'table' && table.rowEstimate !== null && (
-                      <span className="ml-auto text-[11px] tabular-nums text-muted-foreground group-hover/item:opacity-0 group-has-[[data-state=open]]/item:opacity-0">
-                        {formatNumber(table.rowEstimate)}
-                      </span>
-                    )}
                   </NavLink>
-                  {canWrite && table.kind === 'table' && (
-                    <DropdownMenu>
+                  <DropdownMenu>
                       <DropdownMenuTrigger asChild>
                         <Button
                           variant="ghost"
@@ -93,17 +100,23 @@ export function TableList({ connectionId, tables, loading, onCreateTable }: Tabl
                         </Button>
                       </DropdownMenuTrigger>
                       <DropdownMenuContent align="start" side="right">
-                        <DropdownMenuItem onSelect={() => setEditing(table)}>
-                          <Pencil /> Editar tabela
+                        <DropdownMenuItem onSelect={() => void copySchema(table)}>
+                          <FileCode2 /> Copiar schema (SQL)
                         </DropdownMenuItem>
-                        <DropdownMenuItem asChild>
-                          <Link to={`/c/${connectionId}/tables/${table.schema}/${table.name}?view=structure`}>
-                            <Columns3 /> Editar colunas
-                          </Link>
-                        </DropdownMenuItem>
+                        {canWrite && table.kind === 'table' && (
+                          <>
+                            <DropdownMenuItem onSelect={() => setEditing(table)}>
+                              <Pencil /> Editar tabela
+                            </DropdownMenuItem>
+                            <DropdownMenuItem asChild>
+                              <Link to={`/c/${connectionId}/tables/${table.schema}/${table.name}?view=structure`}>
+                                <Columns3 /> Editar colunas
+                              </Link>
+                            </DropdownMenuItem>
+                          </>
+                        )}
                       </DropdownMenuContent>
                     </DropdownMenu>
-                  )}
                   </div>
                 ))}
               </div>

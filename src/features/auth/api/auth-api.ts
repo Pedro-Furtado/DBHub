@@ -8,7 +8,7 @@ const mockUser: User = { id: 'usr_demo', email: 'demo@dbhub.dev' }
 
 const mock = {
   me: async () => mockUser,
-  login: async (_email: string, _password: string) => {
+  login: async (_key: string) => {
     await sleep(400)
     return mockUser
   },
@@ -17,7 +17,7 @@ const mock = {
 
 const real = {
   me: () => api.get<User>('/auth/me'),
-  login: (email: string, password: string) => api.post<User>('/auth/login', { email, password }),
+  login: (key: string) => api.post<User>('/auth/login', { key }),
   logout: () => api.post<void>('/auth/logout'),
 }
 

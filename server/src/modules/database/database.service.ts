@@ -14,6 +14,7 @@ import { alterEnum, createEnum, dropEnum, listEnums } from './enums.service.ts'
 import { getColumns, listTables } from './introspection.service.ts'
 import { getSchemaGraph } from './schema-graph.service.ts'
 import { poolManager } from './pool-manager.ts'
+import { tableDefinition } from './table-definition.service.ts'
 import { assertReadOnlySafe, executeQuery } from './query.service.ts'
 import { deleteRows, exportRows, insertRow, insertRowsBulk, listRows, type RowsQuery, updateRow } from './rows.service.ts'
 
@@ -51,6 +52,10 @@ async function structureChange<T extends { sql: string; applied: boolean }>(
 }
 
 export const databaseService = {
+  /** SQL que recria a tabela/view (botão "Copiar schema") */
+  definition: async (connectionId: string, schema: string, table: string) =>
+    (await withConnection(connectionId, (c) => tableDefinition(c, schema, table))).result,
+
   structure: async (connectionId: string, schema: string, table: string) =>
     (
       await withConnection(connectionId, async (c) => ({

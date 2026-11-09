@@ -3,7 +3,12 @@ import { promisify } from 'node:util'
 import { env } from '../config/env.ts'
 
 const scryptAsync = promisify(scrypt) as (password: string, salt: Buffer, keylen: number) => Promise<Buffer>
-const key = Buffer.from(env.ENCRYPTION_KEY, 'base64')
+/** 32 bytes em base64 são usados direto (compatível com instalações antigas); qualquer outro segredo vira chave via SHA-256. */
+function deriveKey(secret: string) {
+  const raw = Buffer.from(secret, 'base64')
+  return raw.length === 32 && /^[A-Za-z0-9+/]{43}=?$/.test(secret) ? raw : createHash('sha256').update(secret, 'utf8').digest()
+}
+const key = deriveKey(env.ENCRYPTION_KEY)
 
 /**
  * AES-256-GCM: confidencialidade + integridade.

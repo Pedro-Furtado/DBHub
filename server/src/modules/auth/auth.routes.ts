@@ -12,13 +12,12 @@ export const authRoutes: FastifyPluginAsyncZod = async (app) => {
       // Força bruta: no máximo 10 tentativas por minuto por IP
       config: { rateLimit: { max: 10, timeWindow: '1 minute' } },
       schema: {
-        body: z.object({ email: z.email('E-mail inválido'), password: z.string().min(1, 'Informe a senha') }),
+        body: z.object({ key: z.string().trim().min(1, 'Informe a chave de acesso').max(512) }),
         response: { 200: userResponse },
       },
     },
     async (request, reply) => {
-      const { email, password } = request.body
-      const session = await authService.login(email, password, {
+      const session = await authService.login(request.body.key, {
         ip: request.ip,
         userAgent: request.headers['user-agent'],
       })

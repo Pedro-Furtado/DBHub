@@ -7,7 +7,7 @@ import {
   testConnectionResponse,
   updateConnectionBody,
 } from './connections.schemas.ts'
-import { connectionsService, toPublicConnection } from './connections.service.ts'
+import { connectionsService } from './connections.service.ts'
 
 export const connectionsRoutes: FastifyPluginAsyncZod = async (app) => {
   app.get('/', { schema: { response: { 200: connectionResponse.array() } } }, () => connectionsService.list())
@@ -24,7 +24,7 @@ export const connectionsRoutes: FastifyPluginAsyncZod = async (app) => {
   })
 
   app.get('/:id', { schema: { params: connectionParams, response: { 200: connectionResponse } } }, async (request) => {
-    return toPublicConnection(await connectionsService.get(request.params.id))
+    return connectionsService.getFresh(request.params.id)
   })
 
   app.patch('/:id', { schema: { params: connectionParams, body: updateConnectionBody, response: { 200: connectionResponse } } }, (request) =>

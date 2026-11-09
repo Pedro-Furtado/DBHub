@@ -12,7 +12,7 @@ async function main() {
   log.info({ nodeEnv: env.NODE_ENV, node: process.version }, 'Iniciando DBHub server')
 
   await runMigrations()
-  await authService.ensureAdmin()
+  await authService.ensureAccessKey()
 
   const app = await buildApp()
   await app.listen({ port: env.PORT, host: env.HOST })

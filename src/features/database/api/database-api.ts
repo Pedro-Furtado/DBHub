@@ -152,6 +152,7 @@ const real = {
   dropEnum: (id: string, schema: string, name: string, opts: { dryRun?: boolean; cascade?: boolean } = {}) =>
     api.delete<DdlResult>(`/c/${id}/enums/${encodeURIComponent(schema)}/${encodeURIComponent(name)}${flags(opts)}`),
   structure: (id: string, schema: string, table: string) => api.get<TableStructure>(`${tablePath(id, schema, table)}/structure`),
+  definition: (id: string, schema: string, table: string) => api.get<{ kind: string; sql: string }>(`${tablePath(id, schema, table)}/definition`),
   addColumn: (id: string, schema: string, table: string, column: ColumnDefinition, opts: { dryRun?: boolean } = {}) =>
     api.post<DdlResult>(`${tablePath(id, schema, table)}/columns${flags(opts)}`, column),
   alterColumn: (id: string, schema: string, table: string, column: string, change: AlterColumnInput, opts: { dryRun?: boolean } = {}) =>
@@ -200,6 +201,7 @@ const mockDatabase = {
   createEnum: async (_id: string, input: CreateEnumInput) => ({ ...(await mock.ddl()), schema: input.schema, name: input.name }),
   alterEnum: async (_id: string, schema: string, name: string) => ({ ...(await mock.ddl()), schema, name }),
   dropEnum: mock.ddl,
+  definition: async (_id: string, schema: string, table: string) => ({ kind: 'table', sql: `create table "${schema}"."${table}" (\n  id bigint primary key\n);` }),
 }
 
 export const databaseApi = (env.useMocks ? mockDatabase : real) as typeof real

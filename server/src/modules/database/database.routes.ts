@@ -70,6 +70,10 @@ export const databaseRoutes: FastifyPluginAsyncZod = async (app) => {
     databaseService.structure(params.id, params.schema, params.table),
   )
 
+  app.get('/tables/:schema/:table/definition', { schema: { params: tableParams } }, ({ params }) =>
+    databaseService.definition(params.id, params.schema, params.table),
+  )
+
   app.patch('/tables/:schema/:table', { schema: { params: tableParams, body: alterTableBody, querystring: dryRunQuery } }, ({ params, body, query }) =>
     databaseService.alterTable(params.id, params.schema, params.table, body, query.dryRun),
   )

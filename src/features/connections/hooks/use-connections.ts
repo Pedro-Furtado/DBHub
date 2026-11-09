@@ -9,7 +9,8 @@ export const connectionKeys = {
 }
 
 export function useConnections() {
-  return useQuery({ queryKey: connectionKeys.all, queryFn: connectionsApi.list })
+  // Métricas (nº de tabelas, tamanho) mudam a todo momento: busca de novo sempre que a tela abre
+  return useQuery({ queryKey: connectionKeys.all, queryFn: connectionsApi.list, staleTime: 0, refetchOnMount: 'always' })
 }
 
 export function useConnection(id: string | undefined) {
@@ -17,6 +18,8 @@ export function useConnection(id: string | undefined) {
     queryKey: connectionKeys.detail(id ?? ''),
     queryFn: () => connectionsApi.get(id!),
     enabled: Boolean(id),
+    staleTime: 0,
+    refetchOnMount: 'always',
   })
 }
 

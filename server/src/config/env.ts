@@ -18,14 +18,16 @@ const schema = z.object({
 
   DATABASE_URL: z.url({ message: 'DATABASE_URL precisa ser uma URL postgres válida' }),
 
-  ENCRYPTION_KEY: z
-    .string()
-    .refine((v) => Buffer.from(v, 'base64').length === 32, 'ENCRYPTION_KEY precisa ter 32 bytes em base64'),
+  // Qualquer segredo com 32+ caracteres (ex.: ${{secret(48)}} no Railway). 32 bytes em base64 também valem.
+  ENCRYPTION_KEY: z.string().min(32, 'ENCRYPTION_KEY precisa ter pelo menos 32 caracteres'),
   SESSION_SECRET: z.string().min(32, 'SESSION_SECRET precisa ter pelo menos 32 caracteres'),
   SESSION_TTL_HOURS: z.coerce.number().int().positive().default(168),
 
-  ADMIN_EMAIL: z.email().optional(),
-  ADMIN_PASSWORD: z.string().min(8, 'ADMIN_PASSWORD precisa ter pelo menos 8 caracteres').optional(),
+  // Chave para entrar no painel. Sem ela, o DBHub gera uma no primeiro boot e mostra no log.
+  DBHUB_ACCESS_KEY: z.preprocess(
+    (v) => (typeof v === 'string' && v.trim() === '' ? undefined : v),
+    z.string().trim().min(16, 'DBHUB_ACCESS_KEY precisa ter pelo menos 16 caracteres').optional(),
+  ),
 
   CORS_ORIGIN: z.string().default('http://localhost:5173'),
 

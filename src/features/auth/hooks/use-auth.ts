@@ -10,7 +10,7 @@ export function useMe() {
 export function useLogin() {
   const queryClient = useQueryClient()
   return useMutation({
-    mutationFn: ({ email, password }: { email: string; password: string }) => authApi.login(email, password),
+    mutationFn: (key: string) => authApi.login(key),
     onSuccess: (user) => queryClient.setQueryData(authKeys.me, user),
   })
 }
