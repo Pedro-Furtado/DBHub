@@ -14,7 +14,7 @@ RUN npm run build:all
 FROM node:22-alpine AS runtime
 WORKDIR /app
 ENV NODE_ENV=production \
-    HOST=0.0.0.0 \
+    HOST=:: \
     PORT=3333
 
 COPY server/package.json server/package-lock.json ./server/
